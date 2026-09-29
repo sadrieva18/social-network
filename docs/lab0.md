@@ -1,5 +1,270 @@
 # Лабораторная работа №0
 
-Описание предметной области, бизнес-цельпше, сценарии,
-архитектура и схема БД.
+**Тема:** Выбор и описание предметной области. Проектирование функционала приложения.
 
+**Цель:** Сформировать техническое задание к проекту.
+
+## 1. Предметная область
+**Социальная сеть.**
+Пользователь регистрируется, подписывается на других пользователей, публикует
+посты, просматривает ленту постов тех, на кого подписан, ставит лайки.
+Администратор модерирует систему: банит нарушителей и удаляет любой пост.
+
+В системе две роли: `user` (обычный пользователь) и `admin` (администратор).
+
+## 2. Бизнес-цель
+Предоставить пользователям площадку для публикации коротких текстовых постов
+и обмена ими с подписчиками, с возможностью получать рекомендации на основе
+своих интересов и уведомления о событиях в реальном времени; предоставить
+администратору инструменты модерации.
+
+Цель: пользователь может создать пост, подписаться на другого
+пользователя, увидеть его пост в ленте, лайкнуть его; администратор может
+забанить пользователя; уведомления о событиях приходят в реальном времени.
+
+## 3. Функционал приложения
+### 3.1. Для пользователя (роль `user`)
+- регистрация и аутентификация;
+- просмотр ленты постов тех, на кого подписан;
+- создание поста;
+- лайк/снятие лайка;
+- подписка/отписка;
+- просмотр профиля (своего и чужого);
+- просмотр рекомендованных постов;
+- получение уведомлений в реальном времени.
+
+### 3.2. Для администратора (роль `admin`)
+- всё, что доступно пользователю;
+- бан/разбан пользователя;
+- удаление любого поста;
+- просмотр списка пользователей.
+
+## 4. Сценарии использования
+### 4.1. Регистрация и вход
+1. Пользователь отправляет `POST /register` с логином и паролем.
+2. API Service хеширует пароль, сохраняет пользователя в БД, присваивает роль `user`.
+3. Пользователь отправляет `POST /login`.
+4. API Service проверяет пароль и выдаёт JWT.
+5. Клиент сохраняет токен и использует его в заголовке `Authorization: Bearer <token>`.
+
+### 4.2. Создание поста
+1. Авторизованный пользователь отправляет `POST /posts` с текстом.
+2. API Service проверяет JWT, сохраняет пост в БД.
+3. API Service публикует событие `post.created` в RabbitMQ.
+4. Notification Service читает событие и рассылает уведомления подписчикам через WebSocket.
+5. Пост появляется в ленте подписчиков.
+
+### 4.3. Лайк поста
+1. Пользователь отправляет `POST /posts/{id}/like`.
+2. API Service сохраняет запись в таблице `likes`.
+3. API Service публикует событие `post.liked` в RabbitMQ.
+4. Notification Service уведомляет автора поста через WebSocket.
+
+### 4.4. Подписка на пользователя
+1. Пользователь отправляет `POST /users/{id}/follow`.
+2. API Service сохраняет запись в таблице `follows`.
+3. API Service публикует событие `user.followed`.
+4. Notification Service уведомляет того, на кого подписались.
+
+### 4.5. Просмотр ленты с рекомендациями
+1. Пользователь отправляет `GET /feed`.
+2. API Service получает посты подписок из БД.
+3. API Service вызывает gRPC-метод `Recommender.GetRecommendations(user_id)`.
+4. gRPC-сервис анализирует историю лайков и подписок пользователя, находит
+   пользователей с похожими интересами, собирает посты, которые они лайкнули,
+   и возвращает топ-N рекомендованных постов.
+5. API Service объединяет обычную ленту и рекомендации, возвращает клиенту.
+
+### 4.6. Бан пользователя администратором
+1. Администратор отправляет `POST /admin/users/{id}/ban`.
+2. API Service проверяет роль `admin` в JWT.
+3. API Service ставит флаг `is_banned = true` в БД.
+4. API Service публикует событие `user.banned`.
+5. Notification Service уведомляет забаненного пользователя.
+6. При следующем запросе забаненный пользователь получает `403`.
+
+### 4.7. Получение уведомления в реальном времени
+1. Клиент подключается к WebSocket-серверу, передавая JWT.
+2. WebSocket-сервер проверяет токен и удерживает соединение.
+3. При появлении события в RabbitMQ Notification Service формирует уведомление
+   и отправляет его через WebSocket всем активным соединениям адресата.
+4. Клиент мгновенно отображает уведомление.
+
+## 5. Архитектура приложения
+
+Приложение — распределённая система, состоящая из нескольких
+взаимодействующих компонентов, запущенных в отдельных процессах
+(контейнерах).
+
+### 5.1. Компоненты
+
+| Компонент | Назначение | Технологии |
+|---|---|---|
+| Client | Пользовательский интерфейс | Postman, curl, браузер, WebSocket-клиент |
+| API Service | Обработка HTTP-запросов, бизнес-логика | FastAPI, Pydantic, JWT |
+| DB Layer | Доступ к БД | SQLAlchemy |
+| Auth | Аутентификация и авторизация | JWT (PyJWT), passlib + bcrypt |
+| gRPC Service | Рекомендации постов | gRPC, Protocol Buffers |
+| RabbitMQ | Брокер сообщений | RabbitMQ (AMQP) |
+| Notification Service | Обработка событий, формирование уведомлений | aio-pika |
+| WebSocket-сервер | Доставка уведомлений клиенту | FastAPI WebSocket |
+| PostgreSQL | Хранение данных | PostgreSQL |
+| Nginx | Reverse proxy | Nginx |
+| Docker Compose | Развёртывание | Docker, Docker Compose |
+
+### 5.2. Диаграмма компонентов
+
+```mermaid
+flowchart LR
+    C1[Client 1] <--> API[FastAPI Service]
+    API <--> GRPC[gRPC Service]
+    API <--> DB[DB Layer]
+    DB <--> PG[(PostgreSQL)]
+    API <--> AUTH[Auth]
+    API --> MQ[[RabbitMQ]]
+    MQ --> NS[Notification Service]
+    NS --> WS[Socket Service]
+    WS --> C2[Client 2]
+```
+
+### 5.3. Обоснование выбора технологий
+
+| Технология | Обоснование |
+|---|---|
+| FastAPI | Асинхронный веб-фреймворк с автодокументацией (OpenAPI), нативной поддержкой DI и Pydantic |
+| Pydantic | Валидация и сериализация данных, разделение DTO и ORM-моделей |
+| SQLAlchemy | ORM для работы с реляционной БД, декларативное описание моделей |
+| PostgreSQL | Надёжная реляционная СУБД с поддержкой транзакций и ограничений целостности |
+| JWT | Stateless-аутентификация, удобна в распределённой системе (не требует общей сессии) |
+| gRPC | Быстрое межсервисное взаимодействие по строгому контракту (.proto), эффективная сериализация через Protocol Buffers |
+| RabbitMQ | Асинхронный брокер, развязывает API и сервис уведомлений, повышает отказоустойчивость |
+| WebSocket | Двунаправленный канал для доставки уведомлений в реальном времени |
+| Nginx | Reverse proxy, отдача статики |
+| Docker / Docker Compose | Контейнеризация, единая команда запуска всей системы |
+
+### 5.4. Схема взаимодействия
+
+1. Client → API Service (HTTP/JSON, JWT в заголовке).
+2. API Service → PostgreSQL (SQLAlchemy).
+3. API Service → gRPC Service (gRPC/Protobuf) — при запросе рекомендаций.
+4. API Service → RabbitMQ (AMQP) — публикация событий.
+5. RabbitMQ → Notification Service (AMQP) — доставка событий.
+6. Notification Service → Client (WebSocket/JSON) — push-уведомления.
+
+## 6. Схема базы данных
+
+### 6.1. Логическая схема
+
+```mermaid
+erDiagram
+    USERS ||--o{ POSTS : "author"
+    USERS ||--o{ LIKES : "likes"
+    POSTS ||--o{ LIKES : "liked_by"
+    USERS ||--o{ FOLLOWS : "follower"
+    USERS ||--o{ FOLLOWS : "following"
+    USERS ||--o{ NOTIFICATIONS : "receives"
+
+    USERS {
+        bigint id PK
+        varchar username
+        varchar password_hash
+        varchar role
+        boolean is_banned
+        varchar avatar_url
+        timestamptz created_at
+    }
+    POSTS {
+        bigint id PK
+        bigint author_id FK
+        text text
+        timestamptz created_at
+    }
+    LIKES {
+        bigint user_id FK
+        bigint post_id FK
+        timestamptz created_at
+    }
+    FOLLOWS {
+        bigint follower_id FK
+        bigint following_id FK
+        timestamptz created_at
+    }
+    NOTIFICATIONS {
+        bigint id PK
+        bigint user_id FK
+        varchar type
+        jsonb payload
+        boolean is_read
+        timestamptz created_at
+    }
+```
+
+### 6.2. Физическая схема
+
+#### users
+
+| Поле | Тип | Ограничения |
+|---|---|---|
+| id | BIGSERIAL | PRIMARY KEY |
+| username | VARCHAR(50) | UNIQUE, NOT NULL |
+| password_hash | VARCHAR(255) | NOT NULL |
+| role | VARCHAR(20) | NOT NULL, DEFAULT 'user' |
+| is_banned | BOOLEAN | NOT NULL, DEFAULT FALSE |
+| avatar_url | VARCHAR(255) | NULL |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() |
+
+#### posts
+
+| Поле | Тип | Ограничения |
+|---|---|---|
+| id | BIGSERIAL | PRIMARY KEY |
+| author_id | BIGINT | NOT NULL, FK → users(id) ON DELETE CASCADE |
+| text | TEXT | NOT NULL |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() |
+
+Индексы: `ix_posts_author_id`, `ix_posts_created_at`.
+
+#### likes
+
+| Поле | Тип | Ограничения |
+|---|---|---|
+| user_id | BIGINT | NOT NULL, FK → users(id) ON DELETE CASCADE |
+| post_id | BIGINT | NOT NULL, FK → posts(id) ON DELETE CASCADE |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() |
+| | | PRIMARY KEY (user_id, post_id) |
+
+#### follows
+
+| Поле | Тип | Ограничения |
+|---|---|---|
+| follower_id | BIGINT | NOT NULL, FK → users(id) ON DELETE CASCADE |
+| following_id | BIGINT | NOT NULL, FK → users(id) ON DELETE CASCADE |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() |
+| | | PRIMARY KEY (follower_id, following_id) |
+| | | CHECK (follower_id <> following_id) |
+
+#### notifications
+
+| Поле | Тип | Ограничения |
+|---|---|---|
+| id | BIGSERIAL | PRIMARY KEY |
+| user_id | BIGINT | NOT NULL, FK → users(id) ON DELETE CASCADE |
+| type | VARCHAR(50) | NOT NULL |
+| payload | JSONB | NOT NULL |
+| is_read | BOOLEAN | NOT NULL, DEFAULT FALSE |
+| created_at | TIMESTAMPTZ | NOT NULL, DEFAULT now() |
+
+Индекс: `ix_notifications_user_id`.
+
+### 6.3. Соответствие формальным требованиям
+
+| Требование | Реализация |
+|---|---|
+| Чтение, запись, редактирование данных в БД | CRUD для постов, лайков, подписок, пользователей |
+| Не менее двух ролей | `user`, `admin` (поле `users.role`) |
+| Не менее трёх сущностей | users, posts, likes, follows, notifications — 5 |
+| Не менее одной связи M:N | likes (User↔Post), follows (User↔User) — 2 |
+
+## 7. Репозиторий
+
+Ссылка на GitHub: `https://github.com/sadrieva18/social-network`
