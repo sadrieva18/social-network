@@ -17,8 +17,8 @@ admin — администратор. Может всё то же самое п�
 ≥2 роли — user и admin.
 ≥3 сущности — users, posts, likes, follows, notifications (5).
 M:N-связи — likes (User↔Post), follows (User↔User).
-Задачи для gRPC — рекомендации постов.
-Задачи для уведомлений — лайк, подписка, новый пост, бан.
+Задачи для gRPC — рекомендации постов (принимает user_id, анализирует историю лайков и подписок, возвращает топ-N рекомендованных постов)
+Задачи для уведомлений — лайк, подписка, новый пост, бан (post.created, post.liked, user.followed, user.banned)
 
 ## 2. Бизнес-цель
 Предоставить пользователям площадку для публикации коротких текстовых постов
@@ -47,8 +47,7 @@ M:N-связи — likes (User↔Post), follows (User↔User).
 - разбан пользователя — снять блокировку;
 - удаление любого поста — не только своего;
 - просмотр списка пользователей — видеть всех пользователей и их статус (забанен / нет).
-
-1) Что значит бан и разбан?
+  
 Бан — это установка флага is_banned = true в таблице users.
 Забаненный пользователь:
 - не может войти — при POST /login получает 403 Forbidden;
@@ -56,6 +55,16 @@ M:N-связи — likes (User↔Post), follows (User↔User).
 потому что зависимость get_current_user(функция-зависимость в FastAPI, которая по JWT-токену определяет, кто сейчас делает запрос) проверяет is_banned при каждом запросе;
 - его данные сохраняются — посты, лайки, подписки остаются в БД. Он просто не может ими пользоваться.
 Разбан — обратная операция: is_banned = false. Пользователь снова может войти и пользоваться системой.
+Удаление поста
+Пример (HTTP-запрос):
+DELETE /admin/posts/42
+Authorization: Bearer <JWT админа>
+Пример (в БД):
+DELETE FROM posts WHERE id = 42;
+Список пользователей:
+Пример (HTTP-запрос):
+GET /admin/users
+Authorization: Bearer <JWT админа>
 
 Технологии:
 FastAPI — принимает POST /admin/users/{id}/ban и /unban.
@@ -74,28 +83,28 @@ UPDATE users SET is_banned = true WHERE id = 5;
 ## 4. Сценарии использования
 ### 4.1. Регистрация и вход
 Цель сценария: новый пользователь создаёт аккаунт и получает доступ к функциям системы.
-1. Пользователь отправляет `POST /register` с логином и паролем.(пользователь регистрируется)
+1. Пользователь отправляет `POST /register` с логином и паролем. (пользователь регистрируется)
 {
   "username": "vasya",
   "password": "qwerty123"
 }
 2. API Service проверяет, что логин свободен.
 3. API Service хеширует пароль с помощью bcrypt(алгоритм хеширования паролей). Из qwerty123 получается необратимый хеш $2b$12$....
-4. API Service создаёт запись в БД в таблице users, присваивает роль `user`:
+4. API Service создаёт запись в БД в таблице users
 username = "vasya",
 password_hash = "$2b$12$...",
 role = "user" (по умолчанию),
 is_banned = false.
-5. API Service возвращает 201 Created с данными пользователя (без пароля и хеша).
+5. API Service возвращает 201 Created с данными пользователя (без пароля и хеша), если логин занят — возвращает 409 Conflict
 Пример тела ответа:
 {
   "id": 1,
   "username": "vasya",
   "role": "user"
 }
-7. Пользователь отправляет `POST /login`.(пользователь входит в систему)
-8. API Service находит пользователя в БД, проверяет пароль (сравнивая хеши) и что is_banned = false.
-9. API Service формирует JWT:
+6. Пользователь отправляет `POST /login`.(пользователь входит в систему)
+7. API Service находит пользователя в БД, проверяет пароль (сравнивая хеши) и что is_banned = false.
+8. API Service формирует JWT:
 sub = user.id,
 role = user.role,
 exp = now + 1 hour.
@@ -105,19 +114,19 @@ exp = now + 1 hour.
   "role": "user",
   "exp": 1730000000
 }
-11. JWT подписывается секретным ключом (HS256).
+9. JWT подписывается секретным ключом (HS256).
 jwt.encode(payload, SECRET_KEY, algorithm="HS256")
 Что происходит: к payload (данным) добавляется подпись — вычисляется по формуле: подпись = HMAC-SHA256(header + payload, SECRET_KEY)
 
-13. API Service возвращает 200 OK с токеном:
+10. API Service возвращает 200 OK с токеном:
 {
   "access_token": "eyJhbGciOi...",
   "token_type": "bearer"
 }
-14. Клиент сохраняет токен (в localStorage или переменной).
-15. При всех последующих запросах клиент отправляет токен в заголовке:
+11. Клиент сохраняет токен (в localStorage или переменной).
+12. При всех последующих запросах клиент отправляет токен в заголовке:
 Authorization: Bearer <token>
-16. API Service при каждом запросе проверяет подпись токена, срок действия и что пользователь не забанен.
+13. API Service при каждом запросе проверяет подпись токена, срок действия и что пользователь не забанен.
 
 ### 4.2. Создание поста
 Цель сценария: авторизованный пользователь публикует новый пост, и его подписчики получают уведомление.
@@ -219,7 +228,8 @@ created_at = now().
 
 | Компонент | Назначение | Технологии |
 |---|---|---|
-| Client | Пользовательский интерфейс | Postman, curl, браузер, WebSocket-клиент |
+| Client 1 | Отправляет HTTP-запросы к API | Postman, curl, браузер |
+| Client 2 | Получает уведомления в реальном времени | WebSocket-клиент |
 | API Service | Обработка HTTP-запросов, бизнес-логика | FastAPI, Pydantic, JWT |
 | DB Layer | Доступ к БД | SQLAlchemy |
 | Auth | Аутентификация и авторизация | JWT (PyJWT), passlib + bcrypt |
@@ -228,20 +238,25 @@ created_at = now().
 | Notification Service | Обработка событий, формирование уведомлений | aio-pika |
 | WebSocket-сервер | Доставка уведомлений клиенту | FastAPI WebSocket |
 | PostgreSQL | Хранение данных | PostgreSQL |
-| Nginx | Reverse proxy | Nginx |
 | Docker Compose | Развёртывание | Docker, Docker Compose |
 
 ### 5.2. Диаграмма компонентов
-тут будет из методички скрин
+<img width="900" height="747" alt="Снимок экрана 2026-10-01 015128" src="https://github.com/user-attachments/assets/81ad10c8-b474-4626-a674-bef8a1c11779" />
+Рисунок 1 — Диаграмма компонентов
 
 ### 5.3. Схема взаимодействия
 
-1. Client → API Service (HTTP/JSON, JWT в заголовке).
-2. API Service → PostgreSQL (SQLAlchemy).
-3. API Service → gRPC Service (gRPC/Protobuf) — при запросе рекомендаций.
-4. API Service → RabbitMQ (AMQP) — публикация событий.
-5. RabbitMQ → Notification Service (AMQP) — доставка событий.
-6. Notification Service → Client (WebSocket/JSON) — push-уведомления.
+### 5.3. Схема взаимодействия
+
+1. **Client 1 → API Service** (HTTP/JSON, JWT в заголовке `Authorization: Bearer <token>`).
+2. **API Service → Auth** (проверка подписи JWT, срока действия, `is_banned`) — при каждом защищённом запросе.
+3. **API Service → DB Layer → PostgreSQL** (SQL через SQLAlchemy) — чтение и запись данных.
+4. **API Service → gRPC Service** (gRPC/Protobuf) — при запросе рекомендаций.
+5. **API Service → RabbitMQ** (AMQP, JSON) — публикация событий `post.created`, `post.liked`, `user.followed`, `user.banned`.
+6. **RabbitMQ → Notification Service** (AMQP) — доставка событий.
+7. **Notification Service → DB Layer → PostgreSQL** (SQLAlchemy) — сохранение уведомлений в таблицу `notifications`.
+8. **Notification Service → WebSocket-сервер** — передача уведомления.
+9. **WebSocket-сервер → Client 2** (WebSocket/JSON) — push-уведомление в реальном времени.
 
 ## 6. Схема базы данных
 
@@ -268,28 +283,26 @@ USERS 1 — N NOTIFICATIONS — один пользователь получае
 
 ### USERS — пользователи
 
-| Поле | Тип | Что это и зачем |
+| Поле | Что это | Зачем |
 |---|---|---|
-| id | BIGSERIAL | Уникальный номер пользователя. PRIMARY KEY |
-| username | VARCHAR(50) | Логин для входа. UNIQUE, NOT NULL |
-| password_hash | VARCHAR(255) | bcrypt-хеш пароля. Сам пароль не хранится. NOT NULL |
-| role | VARCHAR(20) | Роль: `user` или `admin`. DEFAULT `'user'` |
-| is_banned | BOOLEAN | Флаг бана. DEFAULT FALSE |
-| avatar_url | VARCHAR(255) | Ссылка на аватар. Может быть NULL |
-| created_at | TIMESTAMPTZ | Дата и время регистрации. DEFAULT `now()` |
-
-**Индекс:** `ix_users_username` на `username`.
+| id | Уникальный номер пользователя | PRIMARY KEY. Идентифицирует пользователя |
+| username | Логин | Имя для входа. UNIQUE, NOT NULL |
+| password_hash | Хеш пароля | bcrypt-хеш. Сам пароль не хранится. NOT NULL |
+| role | Роль | `user` или `admin`. DEFAULT `'user'` |
+| is_banned | Флаг бана | Забанен или нет. DEFAULT FALSE |
+| avatar_url | Ссылка на аватар | Может быть NULL |
+| created_at | Дата и время регистрации | DEFAULT `now()` |
 
 ---
 
 ### POSTS — посты
 
-| Поле | Тип | Что это и зачем |
+| Поле | Что это | Зачем |
 |---|---|---|
-| id | BIGSERIAL | Уникальный номер поста. PRIMARY KEY |
-| author_id | BIGINT | Автор поста. FK → `users(id)` ON DELETE CASCADE. NOT NULL |
-| text | TEXT | Текст поста. NOT NULL |
-| created_at | TIMESTAMPTZ | Дата и время создания. DEFAULT `now()` |
+| id | Уникальный номер поста | PRIMARY KEY |
+| author_id | Автор поста | FK → `users(id)` ON DELETE CASCADE. NOT NULL |
+| text | Текст поста | Содержимое. NOT NULL |
+| created_at | Дата и время создания | DEFAULT `now()` |
 
 **Индексы:** `ix_posts_author_id`, `ix_posts_created_at`.
 
@@ -297,11 +310,11 @@ USERS 1 — N NOTIFICATIONS — один пользователь получае
 
 ### LIKES — лайки
 
-| Поле | Тип | Что это и зачем |
+| Поле | Что это | Зачем |
 |---|---|---|
-| user_id | BIGINT | Кто лайкнул. FK → `users(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
-| post_id | BIGINT | Какой пост. FK → `posts(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
-| created_at | TIMESTAMPTZ | Дата и время лайка. DEFAULT `now()` |
+| user_id | Кто лайкнул | FK → `users(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
+| post_id | Какой пост | FK → `posts(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
+| created_at | Дата и время лайка | DEFAULT `now()` |
 
 **Составной PRIMARY KEY:** `(user_id, post_id)` — не даёт лайкнуть один пост дважды.
 
@@ -309,11 +322,11 @@ USERS 1 — N NOTIFICATIONS — один пользователь получае
 
 ### FOLLOWS — подписки
 
-| Поле | Тип | Что это и зачем |
+| Поле | Что это | Зачем |
 |---|---|---|
-| follower_id | BIGINT | Кто подписался. FK → `users(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
-| following_id | BIGINT | На кого подписался. FK → `users(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
-| created_at | TIMESTAMPTZ | Дата и время подписки. DEFAULT `now()` |
+| follower_id | Кто подписался | FK → `users(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
+| following_id | На кого подписался | FK → `users(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
+| created_at | Дата и время подписки | DEFAULT `now()` |
 
 **Составной PRIMARY KEY:** `(follower_id, following_id)` — не даёт подписаться дважды.
 
@@ -323,75 +336,17 @@ USERS 1 — N NOTIFICATIONS — один пользователь получае
 
 ### NOTIFICATIONS — уведомления
 
-| Поле | Тип | Что это и зачем |
+| Поле | Что это | Зачем |
 |---|---|---|
-| id | BIGSERIAL | Уникальный номер уведомления. PRIMARY KEY |
-| user_id | BIGINT | Получатель уведомления. FK → `users(id)` ON DELETE CASCADE. NOT NULL |
-| type | VARCHAR(50) | Тип: `post_liked`, `new_post`, `user_followed`, `user_banned`. NOT NULL |
-| payload | JSONB | Данные уведомления (post_id, from_username и т.д.). NOT NULL |
-| is_read | BOOLEAN | Прочитано или нет. DEFAULT FALSE |
-| created_at | TIMESTAMPTZ | Дата и время создания. DEFAULT `now()` |
+| id | Уникальный номер уведомления | PRIMARY KEY |
+| user_id | Получатель уведомления | FK → `users(id)` ON DELETE CASCADE. NOT NULL |
+| type | Тип уведомления | `post_liked`, `new_post`, `user_followed`, `user_banned`. NOT NULL |
+| payload | Данные уведомления | post_id, from_username и т.д. NOT NULL |
+| is_read | Прочитано или нет | DEFAULT FALSE |
+| created_at | Дата и время создания | DEFAULT `now()` |
 
 **Индекс:** `ix_notifications_user_id` на `user_id`.
 
----
-
-### Соответствие формальным требованиям
-
-| Требование | Реализация |
-|---|---|
-| Чтение, запись, редактирование данных в БД | CRUD для постов, лайков, подписок, пользователей |
-| Не менее двух ролей | `user`, `admin` (поле `users.role`) |
-| Не менее трёх сущностей | users, posts, likes, follows, notifications — 5 |
-| Не менее одной связи M:N | likes (User↔Post), follows (User↔User) — 2 |
-
-```mermaid
-erDiagram
-    USERS ||--o{ POSTS : "author"
-    USERS ||--o{ LIKES : "likes"
-    POSTS ||--o{ LIKES : "liked_by"
-    USERS ||--o{ FOLLOWS : "follower"
-    USERS ||--o{ FOLLOWS : "following"
-    USERS ||--o{ NOTIFICATIONS : "receives"
-
-    USERS {
-        bigint id PK
-        varchar username
-        varchar password_hash
-        varchar role
-        boolean is_banned
-        varchar avatar_url
-        timestamptz created_at
-    }
-    POSTS {
-        bigint id PK
-        bigint author_id FK
-        text text
-        timestamptz created_at
-    }
-    LIKES {
-        bigint user_id FK
-        bigint post_id FK
-        timestamptz created_at
-    }
-    FOLLOWS {
-        bigint follower_id FK
-        bigint following_id FK
-        timestamptz created_at
-    }
-    NOTIFICATIONS {
-        bigint id PK
-        bigint user_id FK
-        varchar type
-        jsonb payload
-        boolean is_read
-        timestamptz created_at
-    }
-```
-
-### 6.1. Логическая схема (смешанная)
-
-ER-диаграмма показывает сущности, их атрибуты с типами данных, ключи и связи.
 Составные PRIMARY KEY:
 - `LIKES`: `(user_id, post_id)`
 - `FOLLOWS`: `(follower_id, following_id)`
