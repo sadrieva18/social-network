@@ -264,6 +264,87 @@ USERS 1 — N FOLLOWS (following) — на одного пользователя
 Вместе FOLLOWS реализует USERS M — N USERS — self-referential M:N.
 USERS 1 — N NOTIFICATIONS — один пользователь получает много уведомлений.
 
+## 6.2. Физическая схема БД
+
+### USERS — пользователи
+
+| Поле | Тип | Что это и зачем |
+|---|---|---|
+| id | BIGSERIAL | Уникальный номер пользователя. PRIMARY KEY |
+| username | VARCHAR(50) | Логин для входа. UNIQUE, NOT NULL |
+| password_hash | VARCHAR(255) | bcrypt-хеш пароля. Сам пароль не хранится. NOT NULL |
+| role | VARCHAR(20) | Роль: `user` или `admin`. DEFAULT `'user'` |
+| is_banned | BOOLEAN | Флаг бана. DEFAULT FALSE |
+| avatar_url | VARCHAR(255) | Ссылка на аватар. Может быть NULL |
+| created_at | TIMESTAMPTZ | Дата и время регистрации. DEFAULT `now()` |
+
+**Индекс:** `ix_users_username` на `username`.
+
+---
+
+### POSTS — посты
+
+| Поле | Тип | Что это и зачем |
+|---|---|---|
+| id | BIGSERIAL | Уникальный номер поста. PRIMARY KEY |
+| author_id | BIGINT | Автор поста. FK → `users(id)` ON DELETE CASCADE. NOT NULL |
+| text | TEXT | Текст поста. NOT NULL |
+| created_at | TIMESTAMPTZ | Дата и время создания. DEFAULT `now()` |
+
+**Индексы:** `ix_posts_author_id`, `ix_posts_created_at`.
+
+---
+
+### LIKES — лайки
+
+| Поле | Тип | Что это и зачем |
+|---|---|---|
+| user_id | BIGINT | Кто лайкнул. FK → `users(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
+| post_id | BIGINT | Какой пост. FK → `posts(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
+| created_at | TIMESTAMPTZ | Дата и время лайка. DEFAULT `now()` |
+
+**Составной PRIMARY KEY:** `(user_id, post_id)` — не даёт лайкнуть один пост дважды.
+
+---
+
+### FOLLOWS — подписки
+
+| Поле | Тип | Что это и зачем |
+|---|---|---|
+| follower_id | BIGINT | Кто подписался. FK → `users(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
+| following_id | BIGINT | На кого подписался. FK → `users(id)` ON DELETE CASCADE. Часть составного PRIMARY KEY |
+| created_at | TIMESTAMPTZ | Дата и время подписки. DEFAULT `now()` |
+
+**Составной PRIMARY KEY:** `(follower_id, following_id)` — не даёт подписаться дважды.
+
+**CHECK:** `follower_id <> following_id` — запрет подписки на себя.
+
+---
+
+### NOTIFICATIONS — уведомления
+
+| Поле | Тип | Что это и зачем |
+|---|---|---|
+| id | BIGSERIAL | Уникальный номер уведомления. PRIMARY KEY |
+| user_id | BIGINT | Получатель уведомления. FK → `users(id)` ON DELETE CASCADE. NOT NULL |
+| type | VARCHAR(50) | Тип: `post_liked`, `new_post`, `user_followed`, `user_banned`. NOT NULL |
+| payload | JSONB | Данные уведомления (post_id, from_username и т.д.). NOT NULL |
+| is_read | BOOLEAN | Прочитано или нет. DEFAULT FALSE |
+| created_at | TIMESTAMPTZ | Дата и время создания. DEFAULT `now()` |
+
+**Индекс:** `ix_notifications_user_id` на `user_id`.
+
+---
+
+### Соответствие формальным требованиям
+
+| Требование | Реализация |
+|---|---|
+| Чтение, запись, редактирование данных в БД | CRUD для постов, лайков, подписок, пользователей |
+| Не менее двух ролей | `user`, `admin` (поле `users.role`) |
+| Не менее трёх сущностей | users, posts, likes, follows, notifications — 5 |
+| Не менее одной связи M:N | likes (User↔Post), follows (User↔User) — 2 |
+
 ```mermaid
 erDiagram
     USERS ||--o{ POSTS : "author"
