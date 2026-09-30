@@ -246,7 +246,23 @@ created_at = now().
 ## 6. Схема базы данных
 
 ### 6.1. Логическая схема
-Логическая схема — это ER-диаграмма, на которой видны сущности и связи между ними, без типов полей.
+Логическая схема — это ER-диаграмма, на которой видны сущности и связи между ними.
+Сущности
+USERS — пользователи.
+POSTS — посты.
+LIKES — лайки (промежуточная таблица для M:N).
+FOLLOWS — подписки (промежуточная таблица для M:N, self-referential).
+NOTIFICATIONS — уведомления.
+
+Связи:
+USERS 1 — N POSTS — один пользователь пишет много постов.
+USERS 1 — N LIKES — один пользователь ставит много лайков.
+POSTS 1 — N LIKES — один пост получает много лайков
+Вместе LIKES реализует USERS M — N POSTS — один пользователь лайкает много постов, один пост лайкают много пользователей.
+USERS 1 — N FOLLOWS (follower) — один пользователь подписывается много раз.
+USERS 1 — N FOLLOWS (following) — на одного пользователя подписываются много раз.
+Вместе FOLLOWS реализует USERS M — N USERS — self-referential M:N.
+USERS 1 — N NOTIFICATIONS — один пользователь получает много уведомлений.
 
 ```mermaid
 erDiagram
@@ -280,6 +296,57 @@ erDiagram
     FOLLOWS {
         bigint follower_id FK
         bigint following_id FK
+        timestamptz created_at
+    }
+    NOTIFICATIONS {
+        bigint id PK
+        bigint user_id FK
+        varchar type
+        jsonb payload
+        boolean is_read
+        timestamptz created_at
+    }
+```
+
+### 6.1. Логическая схема (смешанная)
+
+ER-диаграмма показывает сущности, их атрибуты с типами данных, ключи и связи.
+Составные PRIMARY KEY:
+- `LIKES`: `(user_id, post_id)`
+- `FOLLOWS`: `(follower_id, following_id)`
+
+```mermaid
+erDiagram
+    USERS ||--o{ POSTS : "автор"
+    USERS ||--o{ LIKES : "ставит лайк"
+    POSTS ||--o{ LIKES : "лайкнут"
+    USERS ||--o{ FOLLOWS : "подписчик"
+    USERS ||--o{ FOLLOWS : "подписка"
+    USERS ||--o{ NOTIFICATIONS : "получает"
+
+    USERS {
+        bigint id PK
+        varchar username
+        varchar password_hash
+        varchar role
+        boolean is_banned
+        varchar avatar_url
+        timestamptz created_at
+    }
+    POSTS {
+        bigint id PK
+        bigint author_id FK
+        text text
+        timestamptz created_at
+    }
+    LIKES {
+        bigint user_id PK
+        bigint post_id PK
+        timestamptz created_at
+    }
+    FOLLOWS {
+        bigint follower_id PK
+        bigint following_id PK
         timestamptz created_at
     }
     NOTIFICATIONS {
